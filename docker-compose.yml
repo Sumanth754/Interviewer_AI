@@ -17,8 +17,8 @@ services:
 
   api:
     build:
-      context: ./backend
-      dockerfile: src/AIInterviewPlatform.Api/Dockerfile
+      context: .
+      dockerfile: backend/src/AIInterviewPlatform.Api/Dockerfile
     container_name: aichat_api
     restart: unless-stopped
     depends_on:

@@ -2,12 +2,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-COPY AIInterviewPlatform.sln ./
-COPY src/AIInterviewPlatform.Api/AIInterviewPlatform.Api.csproj src/AIInterviewPlatform.Api/
-RUN dotnet restore src/AIInterviewPlatform.Api/AIInterviewPlatform.Api.csproj
+COPY backend/AIInterviewPlatform.sln ./
+COPY backend/src/AIInterviewPlatform.Api/AIInterviewPlatform.Api.csproj backend/src/AIInterviewPlatform.Api/
+RUN dotnet restore backend/src/AIInterviewPlatform.Api/AIInterviewPlatform.Api.csproj
 
-COPY src/ ./src/
-RUN dotnet publish src/AIInterviewPlatform.Api/AIInterviewPlatform.Api.csproj -c Release -o /app/publish --no-restore
+COPY backend/src/ ./backend/src/
+RUN dotnet publish backend/src/AIInterviewPlatform.Api/AIInterviewPlatform.Api.csproj -c Release -o /app/publish --no-restore
 
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
