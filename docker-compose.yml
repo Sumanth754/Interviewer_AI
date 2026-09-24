@@ -1,0 +1,38 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: aichat_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: aichat_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: src/AIInterviewPlatform.Api/Dockerfile
+    container_name: aichat_api
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - redis
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - Database__Mode=Auto
+      - Cache__Mode=Auto
+      - Mongo__ConnectionString=mongodb://mongo:27017
+      - Redis__ConnectionString=redis:6379
+      # - AI__Gemini__ApiKey=your-google-ai-key   # optional: enables Gemini scoring
+    ports:
+      - "8080:8080"
+
+volumes:
+  mongo_data:
