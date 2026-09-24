@@ -1,0 +1,17 @@
+{
+  "files.exclude": {
+    "**/bin": true,
+    "**/obj": true,
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "search.exclude": {
+    "**/bin": true,
+    "**/obj": true,
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "editor.formatOnSave": true,
+  "typescript.preferences.quoteStyle": "double",
+  "files.eol": "\n"
+}

@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C#: AIInterviewPlatform.Api (F5)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "Backend: build",
+      "program": "${workspaceFolder}/backend/src/AIInterviewPlatform.Api/bin/Debug/net8.0/AIInterviewPlatform.Api.dll",
+      "args": ["--launch-profile", "http"],
+      "cwd": "${workspaceFolder}/backend/src/AIInterviewPlatform.Api",
+      "console": "integratedTerminal",
+      "stopAtEntry": false,
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  ]
+}

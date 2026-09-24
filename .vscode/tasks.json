@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Backend: build",
+      "type": "shell",
+      "command": "if (Get-Command dotnet -ErrorAction SilentlyContinue) { dotnet build } else { & \"$env:USERPROFILE\\dotnet\\dotnet.exe\" build }",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": "$msCompile",
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "Backend: run API (port 5000)",
+      "type": "shell",
+      "command": "if (Get-Command dotnet -ErrorAction SilentlyContinue) { dotnet run --project src/AIInterviewPlatform.Api --launch-profile http } else { & \"$env:USERPROFILE\\dotnet\\dotnet.exe\" run --project src/AIInterviewPlatform.Api --launch-profile http }",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Backend: run tests",
+      "type": "shell",
+      "command": "if (Get-Command dotnet -ErrorAction SilentlyContinue) { dotnet test } else { & \"$env:USERPROFILE\\dotnet\\dotnet.exe\" test }",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": "$msCompile",
+      "group": "test"
+    },
+    {
+      "label": "Frontend: dev server (port 5173)",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend: build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": ["$tsc"]
+    }
+  ]
+}
