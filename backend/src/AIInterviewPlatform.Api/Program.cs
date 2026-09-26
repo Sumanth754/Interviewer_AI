@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using AIInterviewPlatform.Api.Auth;
 using AIInterviewPlatform.Api.Data;
@@ -16,8 +17,33 @@ var services = builder.Services;
 var config = builder.Configuration;
 
 // ---------- Options ----------
+services.Configure<BootstrapOptions>(config.GetSection("Bootstrap"));
+
+// JWT signing key.
+// The dev key lives in appsettings.json, which is committed to a public repository,
+// so falling back to it in Production would let anyone mint an Admin token. In
+// Production a missing JWT_KEY therefore gets a random per-instance key instead:
+// the service still starts, but tokens no longer survive a restart.
+var runtimeKey = Environment.GetEnvironmentVariable("JWT_KEY");
+if (string.IsNullOrWhiteSpace(runtimeKey))
+{
+    if (builder.Environment.IsProduction())
+    {
+        runtimeKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
+        Console.WriteLine("[startup] JWT_KEY is not set — generated a random key for this instance. " +
+                          "Set the JWT_KEY env var to keep logins valid across restarts and deploys.");
+    }
+    else
+    {
+        runtimeKey = config["Jwt:Key"]!;
+    }
+}
+
+// Signing and validation must use the *same* key, so the resolved runtime key
+// has to win over whatever appsettings.json holds. TokenService reads this
+// option; the JwtBearer handler below validates with runtimeKey.
 services.Configure<JwtOptions>(config.GetSection("Jwt"));
-var runtimeKey = Environment.GetEnvironmentVariable("JWT_KEY") ?? config["Jwt:Key"]!;
+services.PostConfigure<JwtOptions>(o => o.Key = runtimeKey);
 
 // ---------- Storage (Mongo with in-memory fallback) ----------
 var dbMode = config["Database:Mode"] ?? "Auto";
@@ -168,16 +194,67 @@ app.Use(async (context, next) =>
     }
 });
 
-if (app.Environment.IsDevelopment())
+// Swagger is on by default so the live deployment actually documents its API at
+// /swagger. Set Swagger__Enabled=false to switch it off on a sensitive deployment.
+if (app.Environment.IsDevelopment() || config.GetValue("Swagger:Enabled", true))
 {
     app.UseSwagger();
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "AI Interview Platform API v1"));
 }
 
 app.UseCors("app");
+
+// ---------- Static frontend (single-origin hosting) ----------
+// When the Vite build is published into wwwroot the React app is served from the
+// same origin as the API. That keeps the deployment on one URL, and leaves
+// VITE_API_BASE empty so the browser calls relative /api paths — which means no
+// CORS configuration and no separate frontend host.
+var webRoot = app.Environment.WebRootPath;
+var indexFile = string.IsNullOrEmpty(webRoot) ? null : Path.Combine(webRoot, "index.html");
+var hasFrontend = indexFile is not null && File.Exists(indexFile);
+if (hasFrontend)
+{
+    app.UseDefaultFiles();
+    app.UseStaticFiles();
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// SPA history fallback: client-side routes such as /dashboard or /admin must
+// return index.html, while unknown /api paths must stay 404 JSON.
+app.MapFallback(async context =>
+{
+    if (context.Request.Path.StartsWithSegments("/api"))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        await context.Response.WriteAsJsonAsync(new { error = "Endpoint not found." });
+        return;
+    }
+
+    // A request for a concrete file (hashed bundle, favicon, …) that does not
+    // exist must 404 rather than silently return HTML, which the browser would
+    // reject with a confusing MIME-type error.
+    if (Path.HasExtension(context.Request.Path.Value))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    if (hasFrontend)
+    {
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.SendFileAsync(indexFile!);
+        return;
+    }
+
+    context.Response.StatusCode = StatusCodes.Status404NotFound;
+    await context.Response.WriteAsJsonAsync(new
+    {
+        error = "Frontend bundle not found. Run the API on its own, or build the frontend into wwwroot."
+    });
+});
 
 // ---------- Seed ----------
 if (config["Seeding:RunOnStartup"] != "false")

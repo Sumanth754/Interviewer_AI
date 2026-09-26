@@ -56,3 +56,15 @@ public sealed class JwtOptions
     public string Audience { get; set; } = "AIInterviewPlatformUsers";
     public int ExpiryDays { get; set; } = 7;
 }
+
+public sealed class BootstrapOptions
+{
+    /// <summary>
+    /// When set, only this email address is promoted to Admin on the very first
+    /// registration. Every other account becomes a Candidate even on an empty
+    /// database, which stops a stranger from claiming Admin on a public
+    /// deployment that uses in-memory storage. Leave empty to keep the
+    /// zero-config "first user is Admin" behaviour for local development.
+    /// </summary>
+    public string AdminEmail { get; set; } = "";
+}

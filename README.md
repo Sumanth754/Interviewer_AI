@@ -6,7 +6,7 @@ An **AI-interview studio** for campus placement prep: adaptive difficulty, live 
 - **Scoring:** Rubric engine built in; upgrade to **Gemini 2.5 Flash** by setting one env var.
 - **Frontend:** React 19 + TypeScript + Vite, dark glass design, SVG skill radar, Web Speech API voice input.
 - **Tests:** xUnit (14 tests) for hashing, JWT, rubric scoring, adaptive picker, percentiles, seed data.
-- **Deploy:** optional `docker-compose.yml` for Mongo + Redis + API. Full hosting walkthroughs (VPS / Render / Railway + GitHub Pages) in **[DEPLOY.md](DEPLOY.md)**.
+- **Deploy:** the API can publish the built React bundle from `wwwroot`, so **one URL serves the whole app**. `scripts/render-build.sh` does that on Render; `docker-compose.yml` does it locally. Full hosting walkthroughs in **[DEPLOY.md](DEPLOY.md)**.
 
 ---
 
@@ -16,12 +16,15 @@ An **AI-interview studio** for campus placement prep: adaptive difficulty, live 
 ai-interview-platform/            # repository root
 ├── backend\
 │   ├── AIInterviewPlatform.sln
-│   ├── src\AIInterviewPlatform.Api\     # the Web API
+│   ├── src\AIInterviewPlatform.Api\     # the Web API (also serves the SPA from wwwroot)
 │   └── tests\AIInterviewPlatform.Tests\ # xUnit tests
 ├── frontend\                            # React + Vite single-page app
+├── scripts\render-build.sh              # Render build: frontend -> API wwwroot
+├── tests\verify-routes.ps1              # smoke-test a deployed host
 ├── .github\workflows\ci.yml             # CI (build + test) on push
-├── docker-compose.yml                   # optional mongo+redis+api stack
+├── docker-compose.yml                   # optional mongo+redis+app stack
 ├── LICENSE
+├── DEPLOY.md
 └── README.md
 ```
 
@@ -70,7 +73,8 @@ Open **http://localhost:5173**. Vite proxies `/api` → `http://localhost:5000`,
 ## 3. How the account model works
 
 - Anyone can register.
-- **The very first account ever registered becomes the Admin** (that's the bootstrap rule). Register a second account and it's a normal Candidate.
+- The **first account registered becomes Admin** — that is the zero-config bootstrap rule, handy locally.
+- **On a public deployment set `Bootstrap__AdminEmail` to your own address.** It pins the Admin promotion to you, so nobody else can claim Admin by registering first (which is otherwise possible whenever storage is in-memory and the store resets on each deploy).
 - Admin can create question banks and add questions (`/admin` in the UI).
 
 ---
@@ -101,8 +105,9 @@ $h    = @{ Authorization = "Bearer $($me.token)" }
 Invoke-RestMethod -Uri "$base/api/banks" -Headers $h | ConvertTo-Json -Depth 4
 
 # start an adaptive session of 5 questions
+$banks = Invoke-RestMethod -Uri "$base/api/banks" -Headers $h
 $start = Invoke-RestMethod -Method Post -Uri "$base/api/sessions/start" -Headers $h `
-  -Body (@{ bankId=$resp[0].id; questionCount=5; durationMinutes=10; adaptive=$true } | ConvertTo-Json) `
+  -Body (@{ bankId=$banks[0].id; questionCount=5; durationMinutes=10; adaptive=$true } | ConvertTo-Json) `
   -ContentType "application/json"
 
 # answer question 0 (typed)
@@ -134,27 +139,54 @@ cd backend
 
 ## 7. Optional: enable MongoDB + Redis
 
-The app detects and switches automatically (`Database:Mode = Auto`, `Cache:Mode = Auto`). Easiest path — Docker:
+The app detects and switches automatically (`Database:Mode = Auto`, `Cache:Mode = Auto`). Easiest path — Docker, which also builds the React bundle into the API image:
 
 ```powershell
 cd <repo-root>
-docker compose up -d --build      # starts mongo, redis, api on port 8080
+docker compose up -d --build      # starts mongo, redis + app on port 8080
 ```
 
 Or set env vars before `dotnet run` when you have local servers:
 
 ```powershell
-$env:Mongo__ConnectionString="mongodb://localhost:27017"
-$env:Redis__ConnectionString="localhost:6379"
 $env:Database__Mode="Mongo"
+$env:Database__Mongo__ConnectionString="mongodb://localhost:27017"
 $env:Cache__Mode="Redis"
+$env:Cache__Redis__ConnectionString="localhost:6379"
 ```
+
+> Config keys must match what `Program.cs` reads: `Database:Mongo:*` and
+> `Cache:Redis:*`. Older docs used `Mongo__ConnectionString` / `Redis__ConnectionString`,
+> which .NET binds to `Mongo:*` / `Redis:*` and the app silently ignores.
 
 Health then reports `"database": "Mongo", "cache": "Redis"`.
 
 ---
 
-## 8. Optional: enable Gemini AI scoring
+## 8. Preview the production build on one port
+
+The API serves `wwwroot` when a frontend build is present, so you can rehearse
+the exact Render deployment locally — no second server, no CORS, no
+`VITE_API_BASE`:
+
+```powershell
+cd backend
+dotnet publish src/AIInterviewPlatform.Api -c Release -o ..\out
+New-Item -ItemType Directory -Force -Path ..\out\wwwroot | Out-Null
+Copy-Item ..\frontend\dist\* ..\out\wwwroot\ -Recurse -Force
+$env:ASPNETCORE_URLS="http://localhost:5055"
+dotnet ..\out\AIInterviewPlatform.Api.dll
+```
+
+Open **http://localhost:5055** — the React app loads and `/api/*` works from the
+same origin. Check `http://localhost:5055/swagger` too.
+
+`scripts/render-build.sh` performs exactly these four steps on Render, and
+`tests/verify-routes.ps1` re-runs the same route checks against any host.
+
+---
+
+## 9. Optional: enable Gemini AI scoring
 
 Get a free key from https://aistudio.google.com/apikey, then:
 

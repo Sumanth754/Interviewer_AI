@@ -28,8 +28,13 @@ services:
       - ASPNETCORE_URLS=http://+:8080
       - Database__Mode=Auto
       - Cache__Mode=Auto
-      - Mongo__ConnectionString=mongodb://mongo:27017
-      - Redis__ConnectionString=redis:6379
+      # Config keys must match Program.cs: Database:Mongo:* and Cache:Redis:*
+      - Database__Mongo__ConnectionString=mongodb://mongo:27017
+      - Database__Mongo__DatabaseName=ai_interview_platform
+      - Cache__Redis__ConnectionString=redis:6379
+      # Pin the Admin bootstrap to your own address so nobody else can claim Admin:
+      # - Bootstrap__AdminEmail=you@example.com
+      # - JWT_KEY=<long random string>   (required in production; generated per-instance if omitted)
       # - AI__Gemini__ApiKey=your-google-ai-key   # optional: enables Gemini scoring
     ports:
       - "8080:8080"
