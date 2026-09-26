@@ -3,9 +3,9 @@
 An **AI-interview studio** for campus placement prep: adaptive difficulty, live AI-scored answers (text **and** voice), focus-integrity tracking, resume-driven question generation and percentile analytics.
 
 - **Backend:** ASP.NET Core (.NET 8) Web API — C#, JWT auth, MongoDB + Redis with automatic in-memory fallbacks, Swagger.
-- **Scoring:** Rubric engine built in; upgrade to **Gemini 2.5 Flash** by setting one env var.
+- **Scoring:** deterministic rubric engine out of the box; add **Gemini 2.5 Flash** LLM feedback by setting one env var.
 - **Frontend:** React 19 + TypeScript + Vite, dark glass design, SVG skill radar, Web Speech API voice input.
-- **Tests:** xUnit (14 tests) for hashing, JWT, rubric scoring, adaptive picker, percentiles, seed data.
+- **Tests:** xUnit (16 tests) for hashing, JWT, rubric scoring, adaptive picker, percentiles, seed data.
 - **Deploy:** the API can publish the built React bundle from `wwwroot`, so **one URL serves the whole app**. `scripts/render-build.sh` does that on Render; `docker-compose.yml` does it locally. Full hosting walkthroughs in **[DEPLOY.md](DEPLOY.md)**.
 
 ---
@@ -196,7 +196,9 @@ dotnet run
 # health -> "aiProvider": "Gemini"; scores come with richer LLM feedback
 ```
 
-Without a key, the local rubric scorer is used and everything still works.
+The model defaults to `gemini-2.5-flash`; override with `AI__Gemini__Model` if you
+want a different one. Without a key, the local rubric scorer is used and everything
+still works.
 
 ---
 
@@ -207,7 +209,7 @@ Without a key, the local rubric scorer is used and everything still works.
 - **Scoring pipeline:** rubric always available (deterministic); `CompositeScoreService` adds a Gemini pass when configured; both feed the same `Feedback` DTO so the UI never changes.
 - **Anti-cheat:** focus-loss events recorded per question and penalized at session finish (up to −10 points), shown on results.
 - **Percentile:** score → normal-CDF percentile estimate vs. the platform mean (μ=56, σ=16.5).
-- **First-user bootstrap** grants Admin so the platform is usable end-to-end with zero config; `AddSingleton(gemini)` is registered only when a key is present so DI never resolves `null`.
+- **First-user bootstrap** grants Admin so the platform is usable end-to-end with zero config. Set `Bootstrap__AdminEmail` to pin that promotion to one address — otherwise, with in-memory storage, the first person to register after each deploy becomes Admin. `AddSingleton(gemini)` is registered only when a key is present so DI never resolves `null`.
 
 ## User-facing features at a glance
 

@@ -37,11 +37,15 @@ export default function Interview() {
   const [remaining, setRemaining] = useState(0);
   const [transcript, setTranscript] = useState("");
   const [listening, setListening] = useState(false);
+  const [voiceAnswered, setVoiceAnswered] = useState(false);
   const [showHint, setShowHint] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
 
   const lastAnswer = useRef<Record<string, string>>({});
   const lastOption = useRef<Record<number, number>>({});
+  // Which questions were answered out loud. The rubric only awards the spoken
+  // communication credit when the submitted mode is "voice", so the microphone
+  // state has to travel with the answer instead of being inferred on submit.
   const lastMode = useRef<Record<string, string>>({});
   const lastTime = useRef<Record<string, number>>({});
   const recRef = useRef<RecognitionLike | null>(null);
@@ -103,6 +107,7 @@ export default function Interview() {
     setShowFeedback(q.isAnswered);
     setShowHint(false);
     setTranscript("");
+    setVoiceAnswered(lastMode.current[q.question.id] === "voice");
   }, [session, index]);
 
   const q = session?.questions[index];
@@ -117,15 +122,21 @@ export default function Interview() {
 
   const submit = async (finalFlag: boolean | undefined = undefined) => {
     if (!session || !q || busy) return;
+    // Release the mic before scoring, otherwise a late transcript result
+    // overwrites the answer that was just submitted.
+    stopListening();
+    const questionId = q.question.id;
+    const isMcq = q.question.typeName === "Mcq";
     setBusy(true);
     setError("");
     try {
-      const isMcq = q.question.typeName === "Mcq";
       const payload = {
         answer: isMcq ? undefined : answer.trim() || undefined,
         selectedOptionIndex: isMcq ? (selected ?? undefined) : undefined,
-        mode: "typed",
-        timeTakenSeconds: lastTime.current[q.question.id] ?? Math.max(1, timeTaken),
+        // Previously hardcoded to "typed", which made the rubric's spoken
+        // communication credit unreachable no matter what the user did.
+        mode: !isMcq && lastMode.current[questionId] === "voice" ? "voice" : "typed",
+        timeTakenSeconds: lastTime.current[questionId] ?? Math.max(1, timeTaken),
         focusLost: finalFlag ?? consumeFocusForSubmit(),
       };
       await api.submitAnswer(session.id, q.index, payload);
@@ -182,6 +193,9 @@ export default function Interview() {
     recRef.current = rec;
     rec.start();
     setListening(true);
+    // Mark this question as spoken so submit() reports mode "voice".
+    lastMode.current[q.question.id] = "voice";
+    setVoiceAnswered(true);
   };
 
   const stopListening = () => {
@@ -245,7 +259,11 @@ export default function Interview() {
                 {listening ? "■ Stop recording" : "● Voice mode"}
               </button>
               <span className="muted small">
-                {listening ? "Speaking… transcript updates live." : "Speak your answer, or type below."}
+                {listening
+                  ? "Speaking… transcript updates live."
+                  : voiceAnswered
+                    ? "Recorded by voice — earns the spoken-communication credit on submit."
+                    : "Speak your answer, or type below."}
               </span>
             </div>
             {listening && <div className="live-wave"><span /><span /><span /><span /><span /></div>}
@@ -313,6 +331,7 @@ export default function Interview() {
                 className={cls}
                 onClick={() => {
                   lastTime.current[q.question.id] = Math.max(1, timeTaken);
+                  stopListening();
                   setIndex(sq.index);
                 }}
                 aria-label={`Question ${sq.index + 1}`}

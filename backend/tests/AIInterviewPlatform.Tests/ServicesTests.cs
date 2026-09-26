@@ -110,6 +110,29 @@ public class RubricScoreServiceTests
         var r = await _svc.EvaluateTextAsync(Question(Tags.Dsa, "hash"), "hash table stores things.", "typed");
         Assert.InRange(r.Score, 1, 59);
     }
+
+    // The spoken-communication credit is only reachable when the client actually
+    // reports mode "voice" on the submit request.
+    [Fact]
+    public async Task VoiceMode_AwardsSpokenCommunicationCredit_ForMultiSentenceAnswer()
+    {
+        const string answer = "Well I suppose it mostly works. Perhaps not in every case.";
+        var typed = await _svc.EvaluateTextAsync(Question(Tags.Logic, "hash"), answer, "typed");
+        var voice = await _svc.EvaluateTextAsync(Question(Tags.Logic, "hash"), answer, "voice");
+
+        // Well under 100, so the Math.Min clamp cannot mask the difference.
+        Assert.Equal(typed.Score + 10, voice.Score);
+    }
+
+    [Fact]
+    public async Task VoiceMode_AwardsPartialCredit_ForSingleSentenceAnswer()
+    {
+        const string answer = "I am not really sure about this one.";
+        var typed = await _svc.EvaluateTextAsync(Question(Tags.Logic, "hash"), answer, "typed");
+        var voice = await _svc.EvaluateTextAsync(Question(Tags.Logic, "hash"), answer, "voice");
+
+        Assert.Equal(typed.Score + 5, voice.Score);
+    }
 }
 
 public class AdaptivePickerTests

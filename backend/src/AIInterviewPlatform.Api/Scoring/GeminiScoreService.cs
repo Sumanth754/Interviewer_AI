@@ -74,14 +74,16 @@ public sealed class GeminiScoreService : IScoreService
             generationConfig = new
             {
                 temperature = 0.2,
-                responseMimeType = "application/json"
+                responseMimeType = "application/json",
+                // Grading is a short, deterministic task, so turn off the 2.5-series
+                // dynamic thinking. It otherwise spends the request's latency budget
+                // reasoning and can exceed the configured timeout.
+                thinkingConfig = new { thinkingBudget = 0 }
             }
         };
 
-        var url = $"{_endpoint}/models/{_model}:generateContent?key={Uri.EscapeDataString(_apiKey)}";
-        // Communicate over gRPC? No — REST here.
-        var apiUrl = url.Replace("&amp;", "&");
-        var response = await _http.PostAsJsonAsync(apiUrl, payload, ct);
+        var apiUrl = $"{_endpoint}/models/{_model}:generateContent?key={Uri.EscapeDataString(_apiKey)}";
+        using var response = await _http.PostAsJsonAsync(apiUrl, payload, ct);
         response.EnsureSuccessStatusCode();
 
         var body = await response.Content.ReadFromJsonAsync<GeminiResponse>(cancellationToken: ct);
