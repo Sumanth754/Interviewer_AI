@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.RateLimiting;
 using AIInterviewPlatform.Api.Auth;
 using AIInterviewPlatform.Api.Data;
 using AIInterviewPlatform.Api.Infrastructure;
@@ -45,31 +46,57 @@ if (string.IsNullOrWhiteSpace(runtimeKey))
 services.Configure<JwtOptions>(config.GetSection("Jwt"));
 services.PostConfigure<JwtOptions>(o => o.Key = runtimeKey);
 
-// ---------- Storage (Mongo with in-memory fallback) ----------
+// ---------- Storage ----------
+// Database:Mode = Mongo means Mongo is REQUIRED. The previous behaviour was to
+// fall back to the in-memory store on any connection problem, which produced a
+// deployment that reported itself healthy while serving an empty app and
+// discarding every write. We now fail closed and let the orchestrator restart us.
 var dbMode = config["Database:Mode"] ?? "Auto";
-if (dbMode != "InMemory")
+var mongoRequired = dbMode.Equals("Mongo", StringComparison.OrdinalIgnoreCase);
+
+if (dbMode.Equals("InMemory", StringComparison.OrdinalIgnoreCase))
+{
+    Console.WriteLine("[startup] Storage: in-memory (Database:Mode=InMemory). Data will not persist.");
+    services.AddSingleton<IAppStore, InMemoryAppStore>();
+}
+else
 {
     var mongoCs = Environment.GetEnvironmentVariable("MONGO_CONNECTION")
                   ?? config["Database:Mongo:ConnectionString"];
     var mongoDb = config["Database:Mongo:DatabaseName"] ?? "ai_interview_platform";
 
-    try
+    if (string.IsNullOrWhiteSpace(mongoCs))
     {
-        var mongoStore = new MongoAppStore(mongoCs!, mongoDb!);
-        var ping = mongoStore.PingAsync().GetAwaiter().GetResult();
-        if (ping && dbMode == "Mongo")
-        {
-            services.AddSingleton<IAppStore>(mongoStore);
-            builder.Logging.AddConsole();
-        }
-        else if (ping)
-        {
-            services.AddSingleton<IAppStore>(mongoStore);
-        }
+        var message =
+            $"Storage: Database:Mode is '{dbMode}' but no MongoDB connection string is " +
+            "configured. Set Database__Mongo__ConnectionString to the full " +
+            "mongodb+srv:// URI.";
+
+        if (mongoRequired) throw new MongoUnavailableException(message);
+
+        Console.WriteLine($"[startup] {message} Using the in-memory store; data will not persist.");
+        services.AddSingleton<IAppStore, InMemoryAppStore>();
     }
-    catch (Exception ex)
+    else
     {
-        Console.WriteLine($"[startup] MongoDB unavailable ({ex.Message}); falling back to InMemory store.");
+        try
+        {
+            var mongoStore = await MongoAppStore.ConnectAsync(mongoCs, mongoDb);
+            await mongoStore.EnsureIndexesAsync();
+
+            services.AddSingleton<IAppStore>(mongoStore);
+            Console.WriteLine(
+                $"[startup] Storage: MongoDB connected " +
+                $"(host={MongoConnectionInfo.Host(mongoCs)}, database={mongoDb}, mode={dbMode}).");
+        }
+        catch (MongoUnavailableException ex)
+        {
+            if (mongoRequired) throw;
+
+            Console.WriteLine(
+                $"[startup] {ex.Message} Using the in-memory store; data will not persist.");
+            services.AddSingleton<IAppStore, InMemoryAppStore>();
+        }
     }
 }
 
@@ -99,17 +126,33 @@ else
 }
 
 // ---------- AI scoring ----------
+// The active scorer is reported on /api/health so a deployment can never claim
+// to be model-backed when it is only running the rule-based rubric.
 var aiProvider = config["AI:Provider"] ?? "Auto";
+var geminiModel = config["AI:Gemini:Model"] ?? "gemini-2.5-flash";
 GeminiScoreService? gemini = null;
 var apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? config["AI:Gemini:ApiKey"] ?? "";
-if (aiProvider != "Rubric" && !string.IsNullOrWhiteSpace(apiKey))
+
+if (aiProvider.Equals("Rubric", StringComparison.OrdinalIgnoreCase))
+{
+    Console.WriteLine("[startup] AI scoring: rule-based rubric only (AI:Provider=Rubric). No model is called.");
+}
+else if (string.IsNullOrWhiteSpace(apiKey))
+{
+    Console.WriteLine(
+        "[startup] AI scoring: rule-based rubric only. GEMINI_API_KEY is not set, so no " +
+        "model is called. Set GEMINI_API_KEY in the environment to enable Gemini scoring.");
+}
+else
 {
     gemini = new GeminiScoreService(
         apiKey,
-        config["AI:Gemini:Model"] ?? "gemini-1.5-flash",
+        geminiModel,
         config["AI:Gemini:Endpoint"] ?? "https://generativelanguage.googleapis.com/v1beta",
         int.Parse(config["AI:Gemini:TimeoutSeconds"] ?? "25"));
-    Console.WriteLine("[startup] Gemini scoring enabled (falls back to rubric).");
+    Console.WriteLine(
+        $"[startup] AI scoring: Gemini enabled (model={geminiModel}). " +
+        "If a request fails the rubric scorer is used instead.");
 }
 
 if (gemini is not null)
@@ -129,6 +172,23 @@ services.AddSingleton<IAppSeeder, AppSeeder>();
 
 // ---------- ASP.NET plumbing ----------
 services.AddControllers();
+
+// Keep model-validation failures in the same { error } shape the service layer
+// already returns, so the SPA has one error path instead of two.
+services.Configure<Microsoft.AspNetCore.Mvc.ApiBehaviorOptions>(o =>
+{
+    o.InvalidModelStateResponseFactory = context =>
+    {
+        var message = context.ModelState
+            .Where(kv => kv.Value is { Errors.Count: > 0 })
+            .SelectMany(kv => kv.Value!.Errors.Select(e =>
+                string.IsNullOrWhiteSpace(e.ErrorMessage) ? "is not a valid value" : e.ErrorMessage))
+            .FirstOrDefault() ?? "The request was not valid.";
+
+        return new Microsoft.AspNetCore.Mvc.BadRequestObjectResult(new { error = message });
+    };
+});
+
 services.AddEndpointsApiExplorer();
 services.AddSwaggerGen(c =>
 {
@@ -141,6 +201,15 @@ services.AddSwaggerGen(c =>
         BearerFormat = "JWT",
         In = Microsoft.OpenApi.ParameterLocation.Header
     });
+    // Every operation documents the Bearer requirement by default. The three
+    // genuinely anonymous endpoints (health, register, login) are a known
+    // cosmetic over-declaration; Swashbuckle 10 did not honour a per-operation
+    // override here. Enforcement is unaffected - it is enforced by [Authorize].
+    c.AddSecurityRequirement((Microsoft.OpenApi.OpenApiDocument doc) =>
+        new Microsoft.OpenApi.OpenApiSecurityRequirement
+        {
+            [new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Bearer", doc, null!)] = new List<string>()
+        });
 });
 
 // ---------- CORS (configurable for local dev + hosted frontends) ----------
@@ -169,7 +238,63 @@ services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 services.AddAuthorization();
 
+// ---------- Rate limiting ----------
+// A public deployment with no throttle invites credential stuffing against
+// /api/Auth/login. Auth endpoints get a tight per-IP budget; everything else gets
+// a generous ceiling that still protects against runaway clients.
+var authPermitLimit = config.GetValue("RateLimit:AuthPerMinute", 10);
+var globalPermitLimit = config.GetValue("RateLimit:GlobalPerMinute", 300);
+services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.OnRejected = async (context, token) =>
+    {
+        context.HttpContext.Response.Headers["Retry-After"] = "60";
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            new { error = "Too many requests. Please slow down and try again shortly." },
+            token);
+    };
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = httpContext.Request.Path.StartsWithSegments("/api/Auth")
+                    ? authPermitLimit
+                    : globalPermitLimit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
+
 var app = builder.Build();
+
+// ---------- Security headers ----------
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "DENY";
+    headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=(self)";
+    headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+    headers["Content-Security-Policy"] =
+        "default-src 'self'; " +
+        "script-src 'self'; " +
+        // Vite emits a small inline style block at runtime for the styled-components
+        // free build; 'unsafe-inline' is scoped to styles only, never to scripts.
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; " +
+        "font-src 'self' data:; " +
+        "connect-src 'self'; " +
+        "media-src 'self' blob:; " +
+        "object-src 'none'; " +
+        "base-uri 'self'; " +
+        "form-action 'self'; " +
+        "frame-ancestors 'none'";
+    await next();
+});
 
 // ---------- Global error handling ----------
 app.Use(async (context, next) =>
@@ -220,6 +345,7 @@ if (hasFrontend)
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.MapControllers();
 
 // SPA history fallback: client-side routes such as /dashboard or /admin must

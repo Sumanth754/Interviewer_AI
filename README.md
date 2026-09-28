@@ -132,7 +132,7 @@ Invoke-RestMethod -Method Post -Uri "$base/api/resume/questions" -Headers $h `
 ```powershell
 cd backend
 & "$env:USERPROFILE\dotnet\dotnet.exe" test
-# -> Failed: 0, Passed: 14
+# -> Failed: 0, Passed: 40
 ```
 
 ---
@@ -160,6 +160,37 @@ $env:Cache__Redis__ConnectionString="localhost:6379"
 > which .NET binds to `Mongo:*` / `Redis:*` and the app silently ignores.
 
 Health then reports `"database": "Mongo", "cache": "Redis"`.
+
+### Storage is fail-closed in `Mongo` mode
+
+`Database:Mode` has three values, and the difference matters in production:
+
+| Mode | Behaviour if MongoDB is unreachable |
+|---|---|
+| `InMemory` | never touches Mongo; every restart loses all data |
+| `Auto` | falls back to in-memory **and logs that it did** |
+| `Mongo` | **refuses to start**, so the orchestrator restarts it |
+
+`Mongo` mode is what the hosted deployment uses. The original build silently
+fell back to in-memory, which produced a service that reported `200 OK` on
+`/api/health` while discarding every write — the worst possible failure mode,
+because it looked healthy. Startup now pings MongoDB with 4 attempts
+(20s connect timeout, 1/2/4/8s backoff) and throws `MongoUnavailableException`
+if the database never answers.
+
+### The connection string must be the whole URI
+
+This is the single most common misconfiguration: pasting only the password into
+`Database__Mongo__ConnectionString`. The driver then receives a bare secret,
+fails to parse it, and — before this hardening — the app swallowed the error and
+came up empty. Two safeguards now exist:
+
+- `MongoConnectionInfo.Host()` returns `"(not a MongoDB URI)"` for anything that
+  is not parseable, and `Redact()` strips inline credentials, so a misconfigured
+  value can never be echoed into a log or `/api/health`.
+- Indexes (`users.email`, `users._id`, `banks._id`, `sessions._id`,
+  `users.id + startedAt`) are created at startup, idempotently, so query plans
+  stay sane as the collection grows.
 
 ---
 
@@ -197,8 +228,14 @@ dotnet run
 ```
 
 The model defaults to `gemini-2.5-flash`; override with `AI__Gemini__Model` if you
-want a different one. Without a key, the local rubric scorer is used and everything
+want a different one. Without a key the local rubric scorer is used and everything
 still works.
+
+`/api/health` reports which scorer is **actually** active (`aiProvider: Gemini`
+or `Rubric`) and startup logs say the same thing. The deployment never claims
+model-backed scoring while only the deterministic rubric is running — worth
+stating out loud in an interview, because "graceful degradation" that is
+invisible to the operator is just a silent lie.
 
 ---
 
@@ -210,6 +247,10 @@ still works.
 - **Anti-cheat:** focus-loss events recorded per question and penalized at session finish (up to −10 points), shown on results.
 - **Percentile:** score → normal-CDF percentile estimate vs. the platform mean (μ=56, σ=16.5).
 - **First-user bootstrap** grants Admin so the platform is usable end-to-end with zero config. Set `Bootstrap__AdminEmail` to pin that promotion to one address — otherwise, with in-memory storage, the first person to register after each deploy becomes Admin. `AddSingleton(gemini)` is registered only when a key is present so DI never resolves `null`.
+- **Security headers** are set in one middleware: HSTS, CSP (`object-src 'none'`, `frame-ancestors 'none'`, no inline *scripts*), `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`.
+- **Rate limiting** uses the built-in `System.Threading.RateLimiting` limiter — a tight per-IP budget on `/api/Auth/*` (10/min, `429` + `Retry-After`) against credential stuffing, and a generous global ceiling (300/min) for everything else. No extra package, no Redis dependency.
+- **Secrets never reach a log**: the Mongo host is extracted and inline credentials are replaced with `***:***@` before any connection string is printed.
+- **Input validation** is DataAnnotations on the request contracts plus a `400 { error }` response shape that matches what the service layer already returns, so the SPA has one error path instead of two.
 
 ## User-facing features at a glance
 
