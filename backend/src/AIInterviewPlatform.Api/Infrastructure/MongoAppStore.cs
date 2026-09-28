@@ -47,11 +47,14 @@ public sealed class MongoAppStore : IAppStore
     /// <summary>
     /// Pings with bounded retries and exponential backoff, so a container that is
     /// merely slow to reach Atlas gets a fair chance before we give up on it.
+    /// The window is deliberately bounded (see <c>Database:Mongo:MaxConnectAttempts</c>)
+    /// so a wrong connection string fails a deploy visibly in a couple of minutes
+    /// rather than hanging it.
     /// </summary>
     public static async Task<MongoAppStore> ConnectAsync(
         string connectionString,
         string databaseName,
-        int maxAttempts = 4,
+        int maxAttempts = 6,
         TimeSpan? initialDelay = null,
         CancellationToken ct = default)
     {
@@ -81,7 +84,7 @@ public sealed class MongoAppStore : IAppStore
                     $"[startup] MongoDB ping attempt {attempt}/{maxAttempts} failed " +
                     $"({store.LastPingError}); retrying in {delay.TotalSeconds:0.##}s");
                 await Task.Delay(delay, ct);
-                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 10));
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 5));
             }
         }
 

@@ -1,0 +1,34 @@
+name: Keep Render awake
+
+# Render's free tier spins a service down after ~15 minutes without traffic, and
+# the next request then waits for a cold start (often 30-60s). This job pings the
+# public health endpoint on a schedule so the instance stays warm.
+#
+# The repository is public, so scheduled Actions minutes are free. On a private
+# repository this would consume the monthly minutes allowance - disable it there.
+#
+# A failed run is reported but never blocks anything; the CI workflow is the one
+# that gates the code.
+
+on:
+  schedule:
+    # Every 5 minutes. The shortest interval GitHub accepts, and comfortably
+    # inside Render's idle window.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping health endpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Request /api/health
+        run: |
+          url="https://interviewer-ai-ppmz.onrender.com/api/health"
+          # Cold starts can exceed the usual timeouts, so allow a generous window.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 120 "$url" || echo "000")
+          echo "GET $url -> $code"
+          if [ "$code" != "200" ]; then
+            echo "::warning::Health endpoint returned $code; the instance may be sleeping or the deploy may have failed."
+          fi

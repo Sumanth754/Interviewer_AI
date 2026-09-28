@@ -81,7 +81,11 @@ else
     {
         try
         {
-            var mongoStore = await MongoAppStore.ConnectAsync(mongoCs, mongoDb);
+            // A short, transient Atlas hiccup must not fail a deploy. The budget
+            // is bounded so a genuinely wrong connection string still surfaces
+            // within a couple of minutes instead of hanging the deploy.
+            var connectAttempts = config.GetValue("Database:Mongo:MaxConnectAttempts", 6);
+            var mongoStore = await MongoAppStore.ConnectAsync(mongoCs, mongoDb, connectAttempts);
             await mongoStore.EnsureIndexesAsync();
 
             services.AddSingleton<IAppStore>(mongoStore);
@@ -106,22 +110,39 @@ if (!services.Any(d => d.ServiceType == typeof(IAppStore)))
 // ---------- Cache (Redis with memory fallback) ----------
 var cacheMode = config["Cache:Mode"] ?? "Auto";
 services.AddMemoryCache();
-if (cacheMode == "Memory")
+if (cacheMode.Equals("Memory", StringComparison.OrdinalIgnoreCase))
+{
     services.AddSingleton<ICacheService, InMemoryCacheService>();
+}
 else
 {
-    try
+    var redisCs = Environment.GetEnvironmentVariable("REDIS_CONNECTION")
+                  ?? config["Cache:Redis:ConnectionString"];
+
+    // Nothing configured means nothing to connect to. Without this guard the
+    // client was built with a null/placeholder host and burned a 3s connect
+    // timeout on every cold start, printing a full connection dump for a cache
+    // this deployment was never going to use.
+    if (string.IsNullOrWhiteSpace(redisCs))
     {
-        var redisCs = Environment.GetEnvironmentVariable("REDIS_CONNECTION")
-                      ?? config["Cache:Redis:ConnectionString"];
-        var redis = new RedisCacheService(redisCs!);
-        services.AddSingleton<ICacheService>(redis);
-        Console.WriteLine("[startup] Redis cache ready.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[startup] Redis unavailable ({ex.Message}); using in-memory cache.");
+        Console.WriteLine("[startup] No Redis connection string configured; using the in-memory cache.");
         services.AddSingleton<ICacheService, InMemoryCacheService>();
+    }
+    else
+    {
+        try
+        {
+            services.AddSingleton<ICacheService>(new RedisCacheService(redisCs));
+            Console.WriteLine("[startup] Redis cache configured.");
+        }
+        catch (Exception ex)
+        {
+            // Keep it to one line: the driver's default message is a huge dump
+            // that buries the rest of the startup log.
+            var brief = ex.Message.Split('\n')[0];
+            Console.WriteLine($"[startup] Redis unavailable ({brief}); using the in-memory cache.");
+            services.AddSingleton<ICacheService, InMemoryCacheService>();
+        }
     }
 }
 

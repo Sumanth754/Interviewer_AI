@@ -215,6 +215,23 @@ same origin. Check `http://localhost:5055/swagger` too.
 `scripts/render-build.sh` performs exactly these four steps on Render, and
 `tests/verify-routes.ps1` re-runs the same route checks against any host.
 
+### Why the free instance is slow the first time
+
+Render's free tier idles out after roughly 15 minutes without traffic, and the
+next request then waits on a cold start — typically 30-60 seconds. Two things
+address it:
+
+- `.github/workflows/keep-awake.yml` pings `/api/health` every 5 minutes, so
+  the instance rarely goes cold. Scheduled Actions are free on a public
+  repository.
+- Startup itself is kept short, because every cold start pays for it: Redis is
+  skipped entirely when no connection string is configured (the placeholder
+  `localhost:6379` in `appsettings.json` used to cost a 3s connect timeout on
+  every boot), and the seeder returns early once banks exist.
+
+If you would rather not depend on a cron, add a free [UptimeRobot](https://uptimerobot.com/)
+monitor on `/api/health` with a 5-minute interval and delete the workflow.
+
 ---
 
 ## 9. Optional: enable Gemini AI scoring
