@@ -1,6 +1,9 @@
 using System.ComponentModel.DataAnnotations;
+using System.Linq.Expressions;
+using System.Reflection;
 using AIInterviewPlatform.Api.Contracts;
 using AIInterviewPlatform.Api.Infrastructure;
+using MongoDB.Driver;
 using Xunit;
 
 namespace AIInterviewPlatform.Tests;
@@ -190,4 +193,95 @@ public class RequestValidationTests
     [Fact]
     public void ResumeQuestions_RequiresText()
         => Assert.NotEmpty(Validate(new ResumeQuestionsRequest { ResumeText = "" }));
+}
+
+public class MongoIndexSpecTests
+{
+    /// <summary>
+    /// Reads back the fields and directions the driver will actually index. The
+    /// driver keeps its renderer internal, so the definitions are unwrapped via
+    /// reflection; this is what a createIndexes command would carry.
+    /// </summary>
+    private static List<(string Field, int Direction)> IndexedFields(object keys)
+    {
+        var t = keys.GetType();
+
+        // CombinedIndexKeysDefinition wraps a list of single-key definitions.
+        if (t.GetField("_keys", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(keys)
+            is System.Collections.IEnumerable combined)
+        {
+            var all = new List<(string, int)>();
+            foreach (var item in combined)
+            {
+                if (item != null) all.AddRange(IndexedFields(item));
+            }
+            return all;
+        }
+
+        var fieldDef = t.GetField("_field", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(keys)!;
+        var dir = (SortDirection)t.GetField("_direction", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(keys)!;
+
+        Expression? lambda = null;
+        foreach (var f in fieldDef.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic))
+        {
+            if (f.GetValue(fieldDef) is Expression e) { lambda = e; break; }
+        }
+
+        var body = Assert.IsAssignableFrom<LambdaExpression>(lambda!).Body;
+        if (body is UnaryExpression convert) body = convert.Operand;
+
+        var member = Assert.IsAssignableFrom<MemberExpression>(body);
+        return new List<(string, int)> { (member.Member.Name, dir == SortDirection.Descending ? -1 : 1) };
+    }
+
+    /// <summary>
+    /// Regression guard. The first deployment of these indexes declared
+    /// <c>unique</c> on <c>_id</c>, which MongoDB rejects outright, so
+    /// createIndexes failed and the service refused to start. No spec may index
+    /// <c>_id</c>, and uniqueness may never be combined with it.
+    /// </summary>
+    [Fact]
+    public void NoStartupIndex_TargetsId()
+    {
+        var models = new (string Label, CreateIndexOptions Options, object Keys)[]
+        {
+            ("users.email", MongoIndexSpecs.UsersEmail().Options, MongoIndexSpecs.UsersEmail().Keys),
+            ("sessions.user+startedAt",
+                MongoIndexSpecs.SessionsUserStartedAt().Options,
+                MongoIndexSpecs.SessionsUserStartedAt().Keys),
+        };
+
+        foreach (var (label, options, keys) in models)
+        {
+            foreach (var (field, _) in IndexedFields(keys))
+            {
+                Assert.NotEqual("_id", field);
+                Assert.NotEqual("Id", field);
+
+                // The exact condition the deploy hit: unique is illegal on an _id spec.
+                if (options.Unique == true)
+                    Assert.NotEqual("Id", field);
+            }
+        }
+    }
+
+    [Fact]
+    public void UsersEmail_IsUniqueOnEmailForLoginLookups()
+    {
+        var model = MongoIndexSpecs.UsersEmail();
+        Assert.Equal("users_email", model.Options.Name);
+        Assert.True(model.Options.Unique);
+        Assert.Equal(new List<(string, int)> { ("Email", 1) }, IndexedFields(model.Keys));
+    }
+
+    [Fact]
+    public void Sessions_AreIndexedByUserThenNewestFirst()
+    {
+        var model = MongoIndexSpecs.SessionsUserStartedAt();
+        Assert.Equal("sessions_user_started", model.Options.Name);
+        Assert.NotEqual(true, model.Options.Unique);
+        Assert.Equal(
+            new List<(string, int)> { ("UserId", 1), ("StartedAt", -1) },
+            IndexedFields(model.Keys));
+    }
 }

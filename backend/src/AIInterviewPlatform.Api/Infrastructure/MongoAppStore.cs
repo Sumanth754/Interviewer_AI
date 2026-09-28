@@ -130,36 +130,20 @@ public sealed class MongoAppStore : IAppStore
     /// Creates the indexes the read paths rely on. Idempotent: re-running is a
     /// no-op, and pre-existing duplicate documents are reported rather than
     /// crashing startup.
+    ///
+    /// Note: no index is created on <c>_id</c>. MongoDB indexes that field
+    /// automatically and enforces uniqueness itself, and it rejects a
+    /// <c>unique</c> option on an <c>_id</c> spec outright, so asking for one
+    /// fails the whole startup command. The specs live in
+    /// <see cref="MongoIndexSpecs"/> where they are unit-tested.
     /// </summary>
     public async Task EnsureIndexesAsync(CancellationToken ct = default)
     {
-        await EnsureAsync("users.email", () => _users.Indexes.CreateOneAsync(
-            new CreateIndexModel<User>(
-                Builders<User>.IndexKeys.Ascending(u => u.Email),
-                new CreateIndexOptions { Name = "users_email", Unique = true })), ct);
+        await EnsureAsync("users.email",
+            () => _users.Indexes.CreateOneAsync(MongoIndexSpecs.UsersEmail()), ct);
 
-        await EnsureAsync("users.id", () => _users.Indexes.CreateOneAsync(
-            new CreateIndexModel<User>(
-                Builders<User>.IndexKeys.Ascending(u => u.Id),
-                new CreateIndexOptions { Name = "users_id", Unique = true })), ct);
-
-        await EnsureAsync("banks.id", () => _banks.Indexes.CreateOneAsync(
-            new CreateIndexModel<QuestionBank>(
-                Builders<QuestionBank>.IndexKeys.Ascending(b => b.Id),
-                new CreateIndexOptions { Name = "banks_id", Unique = true })), ct);
-
-        await EnsureAsync("sessions.id", () => _sessions.Indexes.CreateOneAsync(
-            new CreateIndexModel<AssessmentSession>(
-                Builders<AssessmentSession>.IndexKeys.Ascending(s => s.Id),
-                new CreateIndexOptions { Name = "sessions_id", Unique = true })), ct);
-
-        // Matches ListUserSessionsAsync: filter by user, newest first.
-        await EnsureAsync("sessions.user+startedAt", () => _sessions.Indexes.CreateOneAsync(
-            new CreateIndexModel<AssessmentSession>(
-                Builders<AssessmentSession>.IndexKeys
-                    .Ascending(s => s.UserId)
-                    .Descending(s => s.StartedAt),
-                new CreateIndexOptions { Name = "sessions_user_started" })), ct);
+        await EnsureAsync("sessions.user+startedAt",
+            () => _sessions.Indexes.CreateOneAsync(MongoIndexSpecs.SessionsUserStartedAt()), ct);
     }
 
     private static async Task EnsureAsync(string label, Func<Task> create, CancellationToken ct)
